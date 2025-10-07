@@ -1,67 +1,85 @@
-Flash Loan test
+# Flash Loan Arbitrage Bot
+
+Flash loan arbitrage project between Camelot and Sushiswap on Arbitrum.
+
+## How it works
+
+The concept is simple:
+1. Borrow USDC via flash loan on Aave
+2. Swap USDC → WETH on Camelot
+3. Swap WETH → USDC on Sushiswap
+4. Repay the flash loan
+5. Keep the profit (if any)
+
+The `ArbitrageFlashLoan.sol` contract handles everything automatically. Once it receives tokens from Aave, it executes the swaps and repays immediately.
+
+## Project structure
+
+```
+contracts/
+  ├── src/
+  │   └── ArbitrageFlashLoan.sol    # Main contract
+  └── script/
+      └── DeployFlashLoan.s.sol     # Deployment script
+
+bot/
+  └── src/
+      ├── arbitrage-bot.js          # Monitoring bot
+      └── monitoring.js             # Opportunity tracking
+```
+
+## Deployment
+
+Using Foundry to deploy on Arbitrum:
+
+```bash
+cd contracts
+forge script script/DeployFlashLoan.s.sol:DeployFlashLoan --rpc-url $ARBITRUM_RPC --broadcast --verify
+```
+
+The script automatically configures:
+- Aave pool address
+- Sushiswap and Camelot routers
+- Tokens for arbitrage (USDC/WETH)
+
+## Monitoring
+
+The bot continuously monitors prices on both DEXs to detect opportunities:
+
+```bash
+cd bot/src
+node arbitrage-bot.js
+```
+
+When it finds an interesting price difference, it calculates if it's profitable after fees (swap + flash loan) and triggers the flash loan automatically.
+
+## Configuration
+
+Create a `.env` file in `bot/src/`:
+
+```
+PRIVATE_KEY=your_key
+ARBITRUM_RPC=your_rpc
+CONTRACT_ADDRESS=deployed_contract_address
+```
+
 ## Foundry
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+This project uses Foundry for development:
 
-Foundry consists of:
-
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
+**Build**
 ```shell
-$ forge build
+forge build
 ```
 
-### Test
-
+**Test**
 ```shell
-$ forge test
+forge test
 ```
 
-### Format
-
+**Deploy**
 ```shell
-$ forge fmt
+forge script script/DeployFlashLoan.s.sol --rpc-url <rpc> --broadcast
 ```
 
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+Full documentation: https://book.getfoundry.sh/
