@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.10;
 
-import {FlashLoanSimpleReceiverBase} from "../lib/aave-v3-core/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
-import {IPoolAddressesProvider} from "../lib/aave-v3-core/contracts/interfaces/IPoolAddressesProvider.sol";
-import {IERC20} from "../node_modules/@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ReentrancyGuard} from "../node_modules/@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {SafeERC20} from "../node_modules/@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {CamelotRouter} from "../lib/periphery/contracts/CamelotRouter.sol";
-import {IUniswapV2Router02} from "../lib/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
-
+import {FlashLoanSimpleReceiverBase} from "aave-v3-core/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
+import {IPoolAddressesProvider} from "aave-v3-core/contracts/interfaces/IPoolAddressesProvider.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IUniswapV2Router02} from "v2-periphery/interfaces/IUniswapV2Router02.sol";
+import {ICamelotRouter} from "periphery/interfaces/ICamelotRouter.sol";
 
 // get USDC from AAVE
 // swap USDC for WETH on Camelot
@@ -81,17 +80,17 @@ contract ArbitrageFlashLoan is FlashLoanSimpleReceiverBase, ReentrancyGuard {
         // Use SafeERC20 for safer approval
         IERC20(_tokenIn).safeIncreaseAllowance(camelotRouterAddress, _amount);
 
-        uint256 amountOutMin = CamelotRouter(camelotRouterAddress).
+        uint256 amountOutMin = ICamelotRouter(camelotRouterAddress).
             getAmountsOut(_amount, path)[1] * SLIPPAGE_TOLERANCE / 100;
 
         uint256 balanceBefore = IERC20(_tokenOut).balanceOf(address(this));
 
-        CamelotRouter(camelotRouterAddress).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        ICamelotRouter(camelotRouterAddress).swapExactTokensForTokensSupportingFeeOnTransferTokens(
             _amount,
             amountOutMin,
             path,
             address(this),
-            address(0),
+            address(0), // referrer address
             block.timestamp + DEADLINE_EXTENSION
         );
 
