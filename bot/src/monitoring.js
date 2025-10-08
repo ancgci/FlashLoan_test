@@ -1,11 +1,11 @@
 // monitor.js
-require('dotenv').config();
+require('dotenv').config({ path: '../../.env' });
 const { ethers } = require('ethers');
 
 class ArbitrageMonitor {
     constructor() {
         // RPC Arbitrum
-        this.provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+        this.provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL);
 
         // Configuration DEX
         this.DEX = {
@@ -37,19 +37,47 @@ class ArbitrageMonitor {
 
     async checkLiquidity(dex, addresses) {
         const factoryABI = ["function getPair(address tokenA, address tokenB) view returns (address pair)"];
-        const pairABI = ["function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"];
+        const pairABI = [
+            "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+            "function token0() view returns (address)"
+        ];
 
         try {
             const factory = new ethers.Contract(this.DEX[dex].factory, factoryABI, this.provider);
             const pairAddress = await factory.getPair(addresses.WETH, addresses.USDC);
 
+            if (pairAddress === ethers.ZeroAddress) {
+                return 0;
+            }
+
             const pair = new ethers.Contract(pairAddress, pairABI, this.provider);
             const [reserve0, reserve1] = await pair.getReserves();
+            const token0 = await pair.token0(); // Chamando corretamente como função
 
-            // Estimation simple de la liquidité
-            return Number(ethers.formatUnits(reserve0, 18)) * 2000; // Prix ETH estimé
+            // Obter preço atual do WETH em USDC para cálculo mais preciso
+            const oneEth = ethers.parseUnits("1", 18);
+            const ethPrice = await this.getPriceDex('camelot', addresses);
+            
+            // Calcular a liquidez total em USD considerando ambas as reservas
+            let usdcReserve, wethReserve;
+            
+            if (token0.toLowerCase() === addresses.USDC.toLowerCase()) {
+                usdcReserve = reserve0;
+                wethReserve = reserve1;
+            } else {
+                usdcReserve = reserve1;
+                wethReserve = reserve0;
+            }
+
+            // Converter reservas para valores em USD
+            const usdcValue = Number(ethers.formatUnits(usdcReserve, 6));
+            const wethValueInUSD = Number(ethers.formatUnits(wethReserve, 18)) * ethPrice;
+            
+            // Retornar liquidez total em USD
+            const totalLiquidityUSD = usdcValue + wethValueInUSD;
+            return totalLiquidityUSD;
         } catch(error) {
-            console.error(`Erreur liquidité ${dex}:`, error);
+            console.error(`Erro de liquidez ${dex}:`, error);
             return 0;
         }
     }
@@ -65,7 +93,7 @@ class ArbitrageMonitor {
             const amounts = await router.getAmountsOut(amountIn, path);
             return Number(ethers.formatUnits(amounts[1], 6));
         } catch(error) {
-            console.error(`Erreur ${dex} prix:`, error);
+            console.error(`Erro ${dex} preço:`, error);
             return 0;
         }
     }
@@ -75,27 +103,27 @@ class ArbitrageMonitor {
             const feeData = await this.provider.getFeeData();
             return Number(ethers.formatUnits(feeData.gasPrice, 'gwei'));
         } catch(error) {
-            console.error('Erreur gas:', error);
+            console.error('Erro gas:', error);
             return null;
         }
     }
     async estimateFlashLoanCosts(amount = 5000) {
         try {
-            // Conversion en USDC (6 decimals)
+            // Conversão para USDC (6 decimais)
             const amountUSDC = ethers.parseUnits(amount.toString(), 6);
 
-            // Frais de Flash Loan (généralement 0.09% sur Aave)
+            // Taxas de Flash Loan (geralmente 0,09% na Aave)
             const flashLoanFee = (amount * 0.0009);
 
-            // Estimation du gas pour une transaction complète
-            const estimatedGasLimit = 500000; // Gas estimé pour un flash loan + 2 swaps
+            // Estimativa de gas para uma transação completa
+            const estimatedGasLimit = 500000; // Gas estimado para um flash loan + 2 swaps
             const gasPrice = await this.getGasPrice();
 
-            // Conversion du prix du gas en USD (prix ETH approximatif)
+            // Conversão do preço do gas para USD (preço ETH aproximado)
             const ethPrice = await this.getPriceDex('camelot', this.pairs['USDC/WETH'].addresses);
             const gasCostUSD = (gasPrice * 1e-9) * estimatedGasLimit * (ethPrice);
 
-            // Coût total
+            // Custo total
             const totalCosts = flashLoanFee + gasCostUSD;
 
             return {
@@ -104,7 +132,7 @@ class ArbitrageMonitor {
                 totalCosts
             };
         } catch(error) {
-            console.error('Erreur estimation coûts:', error);
+            console.error('Erro estimativa custos:', error);
             return null;
         }
     }
@@ -127,32 +155,38 @@ class ArbitrageMonitor {
                 const spread = Math.abs(prices.camelot - prices.sushi) / prices.camelot * 100;
                 const gasPrice = await this.getGasPrice();
 
-                // Calculer le profit potentiel pour 5000 USDC
+                // Calcular o lucro potencial para 5000 USDC
                 const flashLoanAmount = 5000;
                 const costs = await this.estimateFlashLoanCosts(flashLoanAmount);
 
-                // Calcul du profit brut (avant frais)
+                // Cálculo do lucro bruto (antes das taxas)
                 const profitBrut = (flashLoanAmount * spread) / 100;
-                const profitNet = profitBrut - costs.totalCosts;
+                
+                // Aplicar slippage de 0.5% para cálculo mais realista
+                const slippageTolerance = 0.005; // 0.5%
+                const profitAfterSlippage = profitBrut * (1 - slippageTolerance);
+                
+                const profitNet = profitAfterSlippage - costs.totalCosts;
 
                 if(spread > 0.5 && liquidity.camelot > 50000 && liquidity.sushi > 50000) {
                     console.log(`
 ===============================
-🔍 Opportunité trouvée!
+🔍 Oportunidade encontrada!
 ===============================
-Pair: ${pairName}
-Prix Camelot: $${prices.camelot}
-Prix Sushi: $${prices.sushi}
+Par: ${pairName}
+Preço Camelot: $${prices.camelot}
+Preço Sushi: $${prices.sushi}
 Spread: ${spread.toFixed(2)}%
-Liquidité Camelot: $${Math.floor(liquidity.camelot).toLocaleString()}
-Liquidité Sushi: $${Math.floor(liquidity.sushi).toLocaleString()}
-Gas Price: ${gasPrice} gwei
+Liquidez Camelot: $${Math.floor(liquidity.camelot).toLocaleString()}
+Liquidez Sushi: $${Math.floor(liquidity.sushi).toLocaleString()}
+Preço do Gas: ${gasPrice} gwei
 
-Flash Loan Analysis (pour $${flashLoanAmount}):
-- Profit Brut: $${profitBrut.toFixed(2)}
-- Frais Flash Loan: $${costs.flashLoanFee.toFixed(2)}
-- Frais Gas (estimés): $${costs.gasCostUSD.toFixed(2)}
-- Profit Net: $${profitNet.toFixed(2)}
+Análise Flash Loan (para $${flashLoanAmount}):
+- Lucro Bruto: $${profitBrut.toFixed(2)}
+- Lucro após Slippage (0.5%): $${profitAfterSlippage.toFixed(2)}
+- Taxa Flash Loan: $${costs.flashLoanFee.toFixed(2)}
+- Taxa Gas (estimada): $${costs.gasCostUSD.toFixed(2)}
+- Lucro Líquido: $${profitNet.toFixed(2)}
 - ROI: ${((profitNet/costs.totalCosts) * 100).toFixed(2)}%
 
 Timestamp: ${new Date().toLocaleString()}
@@ -160,22 +194,22 @@ Timestamp: ${new Date().toLocaleString()}
                     `);
                 }
             } catch(error) {
-                console.error(`Erreur pour ${pairName}:`, error);
+                console.error(`Erro para ${pairName}:`, error);
             }
         }
     }
 
     async start() {
-        console.log('🚀 Démarrage monitoring...');
-        console.log('Recherche d\'opportunités...');
+        console.log('🚀 Iniciando monitoramento...');
+        console.log('Procurando oportunidades...');
 
         while (true) {
             try {
                 await this.checkOpportunities();
-                await new Promise(r => setTimeout(r, 1000)); // Check toutes les secondes
+                await new Promise(r => setTimeout(r, 1000)); // Verifica a cada segundo
             } catch(error) {
-                console.error('Erreur:', error);
-                await new Promise(r => setTimeout(r, 5000)); // Attendre 5s si erreur
+                console.error('Erro:', error);
+                await new Promise(r => setTimeout(r, 5000)); // Aguarda 5s em caso de erro
             }
         }
     }

@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: '../.env' }); // Carregar variáveis de ambiente do diretório pai
 const { ethers } = require('ethers');
 
 const CAMELOT_POOL_ABI = [
@@ -14,7 +14,12 @@ const ERC20_ABI = [
 
 class ArbitrageMonitor {
     constructor() {
-        this.provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+        // Verificar se a variável de ambiente ARBITRUM_RPC_URL está definida
+        if (!process.env.ARBITRUM_RPC_URL) {
+            throw new Error('ARBITRUM_RPC_URL não está definida nas variáveis de ambiente');
+        }
+        
+        this.provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL);
 
         this.ADDRESSES = {
             CAMELOT_FACTORY: "0x6EcCab422D763aC031210895C81787E87B43A652",
@@ -41,6 +46,53 @@ class ArbitrageMonitor {
         const factoryABI = ["function getPair(address tokenA, address tokenB) view returns (address pair)"];
         const factory = new ethers.Contract(factoryAddress, factoryABI, this.provider);
         return await factory.getPair(tokenA, tokenB);
+    }
+
+    async checkLiquidity(factoryAddress, tokenA, tokenB) {
+        try {
+            const factoryABI = ["function getPair(address tokenA, address tokenB) view returns (address pair)"];
+            const factory = new ethers.Contract(factoryAddress, factoryABI, this.provider);
+            const pairAddress = await factory.getPair(tokenA, tokenB);
+
+            if (pairAddress === ethers.ZeroAddress) {
+                return 0;
+            }
+
+            const pair = new ethers.Contract(pairAddress, CAMELOT_POOL_ABI, this.provider);
+            const [reserve0, reserve1] = await pair.getReserves();
+            const token0 = await pair.token0();
+
+            // Obter preço atual do WETH em USDC para cálculo mais preciso
+            const oneEth = ethers.parseUnits("1", 18);
+            const ethPrice = await this.getPrice(
+                pairAddress,
+                oneEth,
+                this.ADDRESSES.WETH,
+                this.ADDRESSES.USDC
+            );
+
+            // Calcular a liquidez total em USD considerando ambas as reservas
+            let usdcReserve, wethReserve;
+            
+            if (token0.toLowerCase() === this.ADDRESSES.USDC.toLowerCase()) {
+                usdcReserve = reserve0;
+                wethReserve = reserve1;
+            } else {
+                usdcReserve = reserve1;
+                wethReserve = reserve0;
+            }
+
+            // Converter reservas para valores em USD
+            const usdcValue = Number(ethers.formatUnits(usdcReserve, 6));
+            const wethValueInUSD = Number(ethers.formatUnits(wethReserve, 18)) * Number(ethers.formatUnits(ethPrice, 6));
+            
+            // Retornar liquidez total em USD
+            const totalLiquidityUSD = usdcValue + wethValueInUSD;
+            return totalLiquidityUSD;
+        } catch (error) {
+            console.error('Error checking liquidity:', error);
+            return 0;
+        }
     }
 
     async getPrice(poolAddress, amountIn, tokenIn, tokenOut) {
@@ -126,17 +178,37 @@ class ArbitrageMonitor {
             // Calculate flash loan fee (0.09%)
             const flashLoanFee = (amountIn * BigInt(9)) / BigInt(10000);
 
+            // Adicionar consideração de slippage (0.5%)
+            const slippageTolerance = 0.005; // 0.5%
+            const minAmountOut = (BigInt(sushiUSDCAmount) * BigInt(1000 - Math.floor(slippageTolerance * 1000))) / BigInt(1000);
+
             // Calculate total profit
-            const profitUSDC = BigInt(sushiUSDCAmount) - BigInt(amountIn) - BigInt(gasCostUSDC) - BigInt(flashLoanFee);
+            const profitUSDC = BigInt(minAmountOut) - BigInt(amountIn) - BigInt(gasCostUSDC) - BigInt(flashLoanFee);
+
+            // Check liquidity
+            const liquidityCamelot = await this.checkLiquidity(
+                this.ADDRESSES.CAMELOT_FACTORY,
+                this.ADDRESSES.USDC,
+                this.ADDRESSES.WETH
+            );
+            
+            const liquiditySushi = await this.checkLiquidity(
+                this.ADDRESSES.SUSHI_FACTORY,
+                this.ADDRESSES.USDC,
+                this.ADDRESSES.WETH
+            );
 
             return {
                 amountIn: ethers.formatUnits(amountIn, 6),
                 camelotWETHAmount: ethers.formatUnits(camelotWETHAmount, 18),
                 sushiUSDCAmount: ethers.formatUnits(sushiUSDCAmount, 6),
+                minAmountOut: ethers.formatUnits(minAmountOut, 6), // Valor após slippage
                 gasCost: ethers.formatUnits(gasCostUSDC, 6),
                 flashLoanFee: ethers.formatUnits(flashLoanFee, 6),
                 profit: ethers.formatUnits(profitUSDC, 6),
                 profitPercentage: Number(((profitUSDC * BigInt(10000)) / amountIn).toString()) / 100,
+                liquidityCamelot,
+                liquiditySushi,
                 timestamp: new Date().toISOString()
             };
         } catch (error) {
@@ -162,10 +234,13 @@ class ArbitrageMonitor {
 Amount In: ${result.amountIn} USDC
 WETH received from Camelot: ${result.camelotWETHAmount} WETH
 USDC received from Sushi: ${result.sushiUSDCAmount} USDC
+USDC after slippage: ${result.minAmountOut} USDC
 Gas Cost: ${result.gasCost} USDC
 Flash Loan Fee: ${result.flashLoanFee} USDC
 Net Profit: ${result.profit} USDC
 ROI: ${result.profitPercentage}%
+Liquidity Camelot: $${Math.floor(result.liquidityCamelot).toLocaleString()}
+Liquidity Sushi: $${Math.floor(result.liquiditySushi).toLocaleString()}
 Timestamp: ${result.timestamp}
 ===============================
                     `);

@@ -35,6 +35,7 @@ contract ArbitrageFlashLoan is FlashLoanSimpleReceiverBase, ReentrancyGuard {
     uint256 private constant SLIPPAGE_TOLERANCE = 99; // 1% slippage tolerance
     uint256 private constant DEADLINE_EXTENSION = 120; // 2 minutes
     uint256 private constant MAX_APPROVAL = type(uint256).max;
+    uint256 private constant MIN_PROFIT_THRESHOLD = 1000000000000000000; // 1 token mínimo de lucro
 
     // ------------------------Constructor-------------------------------------
 
@@ -168,7 +169,9 @@ contract ArbitrageFlashLoan is FlashLoanSimpleReceiverBase, ReentrancyGuard {
         emit Debug("USDC final balance", finalBalance);
 
         uint256 currentBalance = IERC20(_tokenIn).balanceOf(address(this));
-        require(currentBalance >= _initialBalance, "Arbitrage not profitable");
+        
+        // Verificar se o arbitragem é lucrativa além do threshold mínimo
+        require(currentBalance >= _initialBalance + MIN_PROFIT_THRESHOLD, "Arbitrage not profitable enough");
 
         return currentBalance;
     }
