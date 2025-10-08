@@ -1,1 +1,3 @@
-node_modules
+# Dotenv file
+.env
+/node_modules
